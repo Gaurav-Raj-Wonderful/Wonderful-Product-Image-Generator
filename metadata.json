@@ -1,0 +1,5 @@
+{
+  "name": "TWC-Agency-PistachioBlankBagGenerator-v3-20250911",
+  "description": "Generate hyper-realistic photos of products in various scenarios. Select a reference product image, describe a scene, and let the Gemini image model bring your vision to life with stunning accuracy.",
+  "requestFramePermissions": []
+}
