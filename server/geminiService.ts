@@ -25,6 +25,18 @@ const safetySettings = [
     { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
 ];
 
+// Function to extract the file path from a gs:// URI or a simple path
+function getFilePath(fullPath: string): string {
+    if (fullPath.startsWith('gs://')) {
+        const parts = fullPath.split('/');
+        // Slice(3) removes 'gs:', '', and the bucket name, returning the object path
+        return parts.slice(3).join('/');
+    }
+    // If it's not a gs:// URI, assume it's already a direct path to the file
+    return fullPath;
+}
+
+
 // 4. Combined Generation Logic
 interface GenerateParams {
     type: 'generate' | 'optimize';
@@ -44,7 +56,7 @@ export async function generate(params: GenerateParams): Promise<GenerationResult
     try {
         if (type === 'optimize') {
             const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-            const fullPrompt = `You are an expert prompt engineer specializing in creating hyper-realistic product photography prompts for a text-to-image AI. Your task is to take a user's simple scene description and expand it into a detailed, professional photographic prompt. Fill in any missing details with creative yet plausible photographic terms. Keep the total length of the expanded prompt to a reasonable size, ideally under 800 words, to ensure it is effective for the image generation model. Crucially, you must append the provided 'Fidelity constraints' to the end of your response. Ensure the final output is only the expanded prompt text and nothing else.
+            const fullPrompt = `You are an expert prompt engineer specializing in creating hyper-realistic product photography prompts for a text-to-image AI. Your task is to take a user\'s simple scene description and expand it into a detailed, professional photographic prompt. Fill in any missing details with creative yet plausible photographic terms. Keep the total length of the expanded prompt to a reasonable size, ideally under 800 words, to ensure it is effective for the image generation model. Crucially, you must append the provided \'Fidelity constraints\' to the end of your response. Ensure the final output is only the expanded prompt text and nothing else.
 
 **Template to use for expansion:**
 "A high-resolution, well-lit product photograph of the referenced product on a [background surface/description]. The lighting is a [lighting setup] to [lighting purpose]. The camera angle is a [angle type] to showcase [specific feature]. Ultra-realistic, with sharp focus on [key detail]. [Aspect ratio]."
@@ -54,7 +66,7 @@ export async function generate(params: GenerateParams): Promise<GenerationResult
 - If any user input conflicts with the reference, keep the product unchanged and adjust only scene/background/camera/light.
 
 ---
-**User's simple description:**
+**User\'s simple description:**
 "${prompt}"
 ---
 
@@ -79,7 +91,8 @@ export async function generate(params: GenerateParams): Promise<GenerationResult
             const promptParts: (string | { inlineData: { data: string; mimeType: string; } })[] = [];
 
             // 1. Download and add the main product image
-            const productFile = bucket.file(imageUrl);
+            const productFilePath = getFilePath(imageUrl);
+            const productFile = bucket.file(productFilePath);
             const [productFileBuffer] = await productFile.download();
             const [productMetadata] = await productFile.getMetadata();
             const productMimeType = productMetadata.contentType || 'image/png';
@@ -92,8 +105,8 @@ export async function generate(params: GenerateParams): Promise<GenerationResult
             // 2. If a size reference image is provided, try to download and add it
             if (sizeReferenceImageUrl) {
                 try {
-                    // Use the sizeReferenceImageUrl directly without prepending any path
-                    const sizeRefFile = bucket.file(sizeReferenceImageUrl);
+                    const sizeRefFilePath = getFilePath(sizeReferenceImageUrl);
+                    const sizeRefFile = bucket.file(sizeRefFilePath);
                     const [sizeRefFileBuffer] = await sizeRefFile.download();
                     const [sizeRefMetadata] = await sizeRefFile.getMetadata();
                     const sizeRefMimeType = sizeRefMetadata.contentType || 'image/png';
@@ -102,7 +115,7 @@ export async function generate(params: GenerateParams): Promise<GenerationResult
                     sizeReferenceLoaded = true;
 
                     // 3. Append the instructional text to the prompt
-                    finalPrompt += "\n\nUse the product image as a strict reference for the product's size, shape, and how it looks in a person's hand. Be natural and don't copy the exact image but just use it to understand the scale and size.";
+                    finalPrompt += "\n\nUse the product image as a strict reference for the product\'s size, shape, and how it looks in a person\'s hand. Be natural and don\'t copy the exact image but just use it to understand the scale and size.";
                 } catch (error) {
                     // If size reference image fails to load, log it but continue without it
                     console.warn(`Warning: Could not load size reference image at ${sizeReferenceImageUrl}:`, error);

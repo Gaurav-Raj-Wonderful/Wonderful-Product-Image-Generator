@@ -3,38 +3,89 @@ import 'dotenv/config';
 import express from 'express';
 import { initializeApp, cert } from 'firebase-admin/app';
 import { getStorage } from 'firebase-admin/storage';
+import { getAppCheck } from 'firebase-admin/app-check';
 import { generate } from './geminiService.js';
+import rateLimit from 'express-rate-limit';
 
 // Initialize Firebase Admin SDK
 let serviceAccount;
-try {
-  serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY || '');
-} catch (e) {
-  console.error('Error parsing FIREBASE_SERVICE_ACCOUNT_KEY: ', e);
-  console.error('Make sure the service account key is properly set in your .env file.');
-}
-
-if (serviceAccount) {
+if (process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
+  try {
+    serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
     initializeApp({
-        credential: cert(serviceAccount),
-        storageBucket: 'gs://twc-agency-pistachio-generator.firebasestorage.app'
+      credential: cert(serviceAccount),
+      storageBucket: 'gs://automation-dev-596d2.firebasestorage.app',
     });
+    console.log("Firebase initialized with service account key.");
+  } catch (e) {
+    console.error('Error parsing FIREBASE_SERVICE_ACCOUNT_KEY. Ensure it is a valid JSON string.', e);
+    process.exit(1);
+  }
+} else {
+  initializeApp({
+    storageBucket: 'gs://automation-dev-596d2.firebasestorage.app',
+  });
+  console.log("Firebase initialized with Application Default Credentials.");
 }
 
 const app = express();
 const port = process.env.PORT || 8080;
 
+// --- Security Middleware ---
+
+// Rate Limiter for login to prevent brute-force attacks
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10, // Limit each IP to 10 login requests per window
+  message: 'Too many login attempts from this IP, please try again after 15 minutes.',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// Rate Limiter for generate to prevent API abuse
+const generateLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 50, // Limit each IP to 50 generate requests per hour
+  message: 'Too many requests to this endpoint from this IP, please try again after an hour.',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const appCheckMiddleware = async (req, res, next) => {
+  if (req.path === '/login') {
+    return next();
+  }
+
+  const appCheckToken = req.header('X-Firebase-AppCheck');
+
+  if (!appCheckToken) {
+    console.log('Request rejected: Missing App Check token.');
+    return res.status(401).send('Unauthorized');
+  }
+
+  try {
+    await getAppCheck().verifyToken(appCheckToken);
+    return next();
+  } catch (err) {
+    console.log(`Request rejected: Invalid App Check token. Error: ${err.message}`);
+    return res.status(401).send('Unauthorized');
+  }
+};
+
+
 // --- API Routes ---
 const apiRouter = express.Router();
+
+apiRouter.use(appCheckMiddleware);
 apiRouter.use(express.json({ limit: '10mb' }));
 
-// Add a logging middleware to see the requests
 apiRouter.use((req, res, next) => {
-  console.log(`Received request: ${req.method} ${req.path}`);
+  console.log(`Request passed App Check. Processing: ${req.method} ${req.path}`);
   next();
 });
 
-apiRouter.post('/login', (req, res) => {
+// Apply the login limiter ONLY to the /login route
+apiRouter.post('/login', loginLimiter, (req, res) => {
   const { password } = req.body;
   if (password === process.env.APP_PASSWORD) {
     res.status(200).json({ success: true });
@@ -43,14 +94,15 @@ apiRouter.post('/login', (req, res) => {
   }
 });
 
-apiRouter.post('/generate', async (req, res) => {
+// Apply the generate limiter ONLY to the /generate route
+apiRouter.post('/generate', generateLimiter, async (req, res) => {
   try {
     const { type, prompt, imageUrl, sizeReferenceImageUrl } = req.body;
     if (!type || !prompt) {
       return res.status(400).json({ error: 'Request must include "type" and "prompt".' });
     }
     if (type === 'generate' && !imageUrl) {
-      return res.status(400).json({ error: "'generate' type requires an 'imageUrl'." });
+      return res.status(400).json({ error: "\'generate\' type requires an \'imageUrl\'." });
     }
     
     const result = await generate({ type, prompt, imageUrl, sizeReferenceImageUrl });
@@ -61,7 +113,6 @@ apiRouter.post('/generate', async (req, res) => {
   }
 });
 
-// Endpoint to get a signed URL for a Firebase Storage image
 apiRouter.post('/getImageUrl', async (req, res) => {
   const { imagePath } = req.body;
 
@@ -75,7 +126,6 @@ apiRouter.post('/getImageUrl', async (req, res) => {
       const bucket = getStorage().bucket();
       const file = bucket.file(imagePath);
 
-      // Get a signed URL for the file that expires in 1 hour
       const expiresAt = Date.now() + 60 * 60 * 1000; // 1 hour
       const [url] = await file.getSignedUrl({
           action: 'read',
@@ -85,7 +135,7 @@ apiRouter.post('/getImageUrl', async (req, res) => {
       res.status(200).json({ 
         result: { 
           signedUrl: url,
-          expiresAt: expiresAt // Send expiration time to client
+          expiresAt: expiresAt
         } 
       });
   } catch (error) {
@@ -96,7 +146,6 @@ apiRouter.post('/getImageUrl', async (req, res) => {
 
 app.use('/api', apiRouter);
 
-// Start the server
 app.listen(port, () => {
   console.log(`Server listening on http://localhost:${port}`);
 });
